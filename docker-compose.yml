@@ -27,7 +27,7 @@ services:
       - TAPO_IP=${TAPO_IP}
       - TAPO_PORT=${TAPO_PORT}
       - TAPO_STREAM=${TAPO_STREAM}
-      - STAFF_IPS=${STAFF_IPS}
+      - STAFF_MACS=${STAFF_MACS}
       - VPS_API_URL=${VPS_API_URL}
     volumes:
       - ./data:/app/data

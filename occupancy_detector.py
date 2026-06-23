@@ -17,9 +17,9 @@ RTSP_IP = os.getenv("TAPO_IP", "192.168.1.100")
 RTSP_PORT = os.getenv("TAPO_PORT", "554")
 RTSP_STREAM = os.getenv("TAPO_STREAM", "stream1")
 
-# スタッフ端末の固定IPアドレス一覧 (環境変数から取得、カンマ区切り対応)
-_staff_ips_raw = os.getenv("STAFF_IPS", "192.168.1.150")
-STAFF_IPS = [ip.strip() for ip in _staff_ips_raw.split(",") if ip.strip()]
+# スタッフ端末のMACアドレス一覧 (環境変数から取得、小文字に統一して保持)
+_staff_macs_raw = os.getenv("STAFF_MACS", "")
+STAFF_MACS = [mac.strip().lower() for mac in _staff_macs_raw.split(",") if mac.strip()]
 # スタッフのWi-Fi接続検知後の猶予時間 (秒) (スマホのスリープ対策: 15分)
 STAFF_GRACE_PERIOD_SEC = 900
 
@@ -57,29 +57,45 @@ def get_rtsp_url():
 
 def check_staff_presence():
     """
-    指定されたスタッフ端末のIPに対してpingを打ち、接続を確認する。
+    arp-scanコマンドを実行し、LAN内にスタッフのMACアドレスを持つ端末がいるか確認する。
     スマホのスリープ状態を考慮し、一度検出したら猶予時間(GRACE_PERIOD)が経過するまでは
     「スタッフ滞在中」と判定する。
     """
     global last_staff_detected_time
     current_time = time.time()
     
-    # pingで現在ネットワーク上にいるか確認
+    if not STAFF_MACS:
+        return False
+
     is_currently_connected = False
-    for ip in STAFF_IPS:
-        # pingを実行 (Windows/Mac/Linux共通で動くように -c/-n オプションを指定)
-        # タイムアウト1秒、出力は捨てる
-        param = "-n" if sys.platform.lower() == "win32" else "-c"
-        response = os.system(f"ping {param} 1 -W 1 {ip} > /dev/null 2>&1")
-        if response == 0:
-            is_currently_connected = True
-            break
-            
+    
+    try:
+        # arp-scan を実行してローカルネットワークをスキャン
+        # --localnet でホスト所属のサブネット全体をスキャン
+        # --retry=1 --timeout=100 で高速スキャン
+        result = subprocess.run(
+            ["arp-scan", "--localnet", "--retry=1", "--timeout=100"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        # arp-scanの出力結果から、大文字小文字を無視して登録されたMACアドレスを探索
+        output_lower = result.stdout.lower()
+        for mac in STAFF_MACS:
+            if mac in output_lower:
+                is_currently_connected = True
+                break
+    except FileNotFoundError:
+        print("⚠️ 警告: arp-scan コマンドが見つかりません。システムに arp-scan をインストールしてください。", file=sys.stderr)
+    except Exception as e:
+        print(f"⚠️ 警告: arp-scan の実行中にエラーが発生しました: {e}", file=sys.stderr)
+        
     if is_currently_connected:
         last_staff_detected_time = current_time
         return True
         
-    # 現在接続が切れていても、猶予時間内であれば「スタッフ滞表中」とみなす
+    # 現在接続が切れていても、猶予時間内であれば「スタッフ滞在中」とみなす
     time_since_last_detect = current_time - last_staff_detected_time
     if time_since_last_detect < STAFF_GRACE_PERIOD_SEC:
         return True
@@ -158,7 +174,7 @@ def main():
     print("在室判定システムを起動しました。")
     print(f"・判定間隔: {CHECK_INTERVAL_SEC}秒おき")
     print(f"・時系列バッファ: 直近 {BUFFER_SIZE} 回中 {OCCUPANCY_RATIO_THRESHOLD*100:.0f}% 以上の検知で在室判定")
-    print(f"・スタッフIP: {', '.join(STAFF_IPS)} (検知猶予: {STAFF_GRACE_PERIOD_SEC//60}分)")
+    print(f"・スタッフMACアドレス: {', '.join(STAFF_MACS)} (検知猶予: {STAFF_GRACE_PERIOD_SEC//60}分)")
     print(f"・ログ保存先: {LOG_FILE.resolve()}")
     print("="*60 + "\n")
     

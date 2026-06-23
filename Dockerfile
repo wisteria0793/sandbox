@@ -3,12 +3,13 @@ FROM python:3.13-slim
 # システムライブラリのインストール
 # - ffmpeg           : 動画保存用
 # - libgl1, libglib2 : OpenCVの動作に必須のグラフィック系ライブラリ
-# - iputils-ping     : スタッフWi-Fi検知用のpingコマンド
+# - iputils-ping, arp-scan: スタッフWi-Fi検知用のpingおよびMACアドレススキャンツール
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
     iputils-ping \
+    arp-scan \
     && rm -rf /var/lib/apt/lists/*
 
 # パッケージマネージャー uv のバイナリをコピーしてインストールを高速化
