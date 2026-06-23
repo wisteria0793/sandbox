@@ -158,11 +158,43 @@ def send_to_vps(data):
     except Exception as e:
         print(f"VPS送信エラー: {e}", file=sys.stderr)
 
+def load_model():
+    """
+    YOLO-Worldモデルをロードする。
+    CPU推論の高速化・省電力化のため、初回起動時にOpenVINO形式へエクスポートし、
+    2回目以降は最適化されたモデルを直接ロードします。
+    """
+    base_model_name = "yolov8s-worldv2.pt"
+    openvino_model_path = Path("yolov8s-worldv2_openvino_model")
+    
+    # すでにOpenVINOモデルが存在すればそれをロード
+    if openvino_model_path.exists():
+        print("💡 最適化された OpenVINO モデルをロードしています...")
+        model = YOLOWorld(str(openvino_model_path))
+    else:
+        print(f"🔄 初回起動：ベースモデル {base_model_name} をロード中...")
+        model = YOLOWorld(base_model_name)
+        
+        print("⚡ CPU推論を高速化・省電力化するため、OpenVINO形式にエクスポート中 (数分かかります)...")
+        try:
+            # OpenVINO形式にエクスポート (CPU向け最適化)
+            # ※初回のみ時間がかかりますが、次回以降は一瞬で起動します
+            model.export(format="openvino")
+            print("✅ OpenVINOへの変換が完了しました。")
+            
+            # 変換したモデルを再ロード
+            print("💡 最適化されたモデルに切り替えています...")
+            model = YOLOWorld(str(openvino_model_path))
+        except Exception as e:
+            print(f"⚠️ OpenVINOへの変換に失敗しました。通常のベースモデルで推論を継続します。エラー: {e}")
+            
+    # クラスの設定
+    model.set_classes(DETECT_CLASSES)
+    return model
+
 def main():
-    print("YOLO-Worldモデルを初期化しています...")
     try:
-        model = YOLOWorld("yolov8s-worldv2.pt")
-        model.set_classes(DETECT_CLASSES)
+        model = load_model()
     except Exception as e:
         print(f"モデルのロードに失敗しました: {e}", file=sys.stderr)
         return

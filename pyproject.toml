@@ -16,6 +16,7 @@ dependencies = [
     "requests>=2.32.5",
     "clip",
     "pychonet>=2.7.3",
+    "openvino>=2024.0.0",
 ]
 
 [tool.uv.sources]
