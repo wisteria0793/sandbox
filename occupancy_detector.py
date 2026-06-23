@@ -3,9 +3,12 @@ import sys
 import time
 import subprocess
 import csv
+import json
+import threading
 from datetime import datetime
 from collections import deque
 from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import cv2
 from ultralytics import YOLOWorld
 
@@ -50,6 +53,58 @@ VPS_API_URL = os.getenv("VPS_API_URL", "")
 # 状態管理用グローバル変数
 detection_history = deque(maxlen=BUFFER_SIZE)
 last_staff_detected_time = 0.0
+
+# Pico W 物理センサー共有データとロック
+sensor_lock = threading.Lock()
+latest_sensors = {
+    "mw_radar": 0,
+    "pir": 0,
+    "last_updated": 0.0
+}
+
+class PicoSensorHandler(BaseHTTPRequestHandler):
+    """
+    Pico W からのセンサーデータ HTTP POST を受け取るハンドラ
+    """
+    def do_POST(self):
+        if self.path == '/sensor':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                
+                # スレッドセーフにグローバル変数を更新
+                with sensor_lock:
+                    latest_sensors["mw_radar"] = int(data.get("mw_radar", 0))
+                    latest_sensors["pir"] = int(data.get("pir", 0))
+                    latest_sensors["last_updated"] = time.time()
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok"}')
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        # 標準のアクセスログを標準出力に垂れ流さないようにミュートします
+        pass
+
+def start_sensor_server():
+    """
+    Pico W からのデータ受信サーバーを起動する (別スレッドで動作させます)
+    """
+    try:
+        server_address = ('', 8080)
+        httpd = HTTPServer(server_address, PicoSensorHandler)
+        print("📡 Pico W センサー受信サーバーをポート 8080 で起動しました。")
+        httpd.serve_forever()
+    except Exception as e:
+        print(f"❌ センサー受信サーバーの起動に失敗しました: {e}", file=sys.stderr)
 
 def get_rtsp_url():
     """RTSP接続URLを組み立てる"""
@@ -123,10 +178,10 @@ def init_log_file():
             writer.writerow([
                 "timestamp", "detected_objects", "raw_detect_count", 
                 "camera_occupancy_raw", "camera_occupancy_smoothed", 
-                "is_staff_present"
+                "mw_radar", "pir", "final_occupancy", "is_staff_present"
             ])
 
-def write_log(timestamp_str, detected_labels, raw_count, raw_occupancy, smoothed_occupancy, is_staff):
+def write_log(timestamp_str, detected_labels, raw_count, raw_occupancy, smoothed_occupancy, radar_val, pir_val, final_occupancy, is_staff):
     """CSVに判定結果を追記"""
     try:
         labels_str = ",".join(detected_labels) if detected_labels else "none"
@@ -136,6 +191,8 @@ def write_log(timestamp_str, detected_labels, raw_count, raw_occupancy, smoothed
                 timestamp_str, labels_str, raw_count, 
                 1 if raw_occupancy else 0, 
                 1 if smoothed_occupancy else 0, 
+                radar_val, pir_val,
+                1 if final_occupancy else 0,
                 1 if is_staff else 0
             ])
     except Exception as e:
@@ -199,6 +256,10 @@ def main():
         print(f"モデルのロードに失敗しました: {e}", file=sys.stderr)
         return
 
+    # Pico W 受信サーバーをバックグラウンドスレッドで起動します
+    server_thread = threading.Thread(target=start_sensor_server, daemon=True)
+    server_thread.start()
+
     init_log_file()
     rtsp_url = get_rtsp_url()
     
@@ -234,7 +295,20 @@ def main():
         # 1. スタッフの滞在判定
         is_staff = check_staff_presence()
         
-        # 2. YOLOでの物体検出実行
+        # 2. Pico W 物理センサーデータの取得 (スレッドセーフ)
+        # 10秒以上更新がない場合は、センサーがオフラインとみなして0扱いにします
+        with sensor_lock:
+            sensor_time_diff = time.time() - latest_sensors["last_updated"]
+            if latest_sensors["last_updated"] > 0 and sensor_time_diff < 10.0:
+                radar_val = latest_sensors["mw_radar"]
+                pir_val = latest_sensors["pir"]
+                sensor_status_str = f"Radar:{radar_val}, PIR:{pir_val}"
+            else:
+                radar_val = 0
+                pir_val = 0
+                sensor_status_str = "Offline"
+        
+        # 3. YOLOでの物体検出実行
         res = model.predict(source=frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
         all_boxes = res[0].boxes
         names_dict = res[0].names
@@ -248,7 +322,7 @@ def main():
         # 生の判定結果（靴、荷物、人が1つでもあればTrue）
         raw_occupancy = len(valid_boxes) > 0
         
-        # 3. 時系列バッファへ追加
+        # 4. 時系列バッファへ追加
         detection_history.append(raw_occupancy)
         
         # 直近の履歴の中で「検出あり」の割合を計算
@@ -258,28 +332,38 @@ def main():
         # 時系列バッファを考慮した最終的なカメラ在室判定
         smoothed_occupancy = detect_ratio >= OCCUPANCY_RATIO_THRESHOLD
         
-        # 4. ログ書き込み
+        # 5. 複合判定 (センサーフュージョン)
+        # カメラ、ミリ波、赤外線のいずれか1つでも「あり」を示していれば【在室】と判定する
+        final_occupancy = smoothed_occupancy or (radar_val == 1) or (pir_val == 1)
+        
+        # 6. ログ書き込み
         write_log(
             timestamp_str=current_time_str,
             detected_labels=detected_labels,
             raw_count=len(valid_boxes),
             raw_occupancy=raw_occupancy,
             smoothed_occupancy=smoothed_occupancy,
+            radar_val=radar_val,
+            pir_val=pir_val,
+            final_occupancy=final_occupancy,
             is_staff=is_staff
         )
         
         # 画面への進捗出力
         staff_status = "👮 スタッフ滞在中" if is_staff else "👤 ゲスト判定モード"
-        status_str = "【🟢 在室中】" if smoothed_occupancy else "【⚪ 不在】"
-        print(f"[{current_time_str}] {status_str} (生判定:{1 if raw_occupancy else 0}, 履歴割合:{detect_ratio:.2f}) | {staff_status} | 検出物: {detected_labels}")
+        status_str = "【🟢 在室中】" if final_occupancy else "【⚪ 不在】"
+        camera_status_str = "あり" if smoothed_occupancy else "なし"
+        print(f"[{current_time_str}] {status_str} (カメラ:{camera_status_str}, センサー:{sensor_status_str}) | {staff_status} | 検出物: {detected_labels}")
         
-        # 5. VPSへのデータ送信 (状態変化、または最初の送信時に実行)
+        # 7. VPSへのデータ送信 (状態変化、または最初の送信時に実行)
         # スタッフ滞在中であってもステータスを送信しますが、データに "is_staff" フラグを乗せます
         vps_payload = {
             "timestamp": datetime.now().isoformat(),
-            "occupancy": 1 if (smoothed_occupancy and not is_staff) else 0, # スタッフ滞在中の場合は「不在(0)」として送る、もしくは別途ステータス管理
+            "occupancy": 1 if (final_occupancy and not is_staff) else 0, # スタッフ滞在中の場合は「不在(0)」として送る
             "is_staff_present": is_staff,
-            "raw_occupancy": raw_occupancy,
+            "camera_occupancy": 1 if smoothed_occupancy else 0,
+            "mw_radar": radar_val,
+            "pir": pir_val,
             "detected_objects": detected_labels
         }
         
@@ -289,12 +373,6 @@ def main():
             send_to_vps(vps_payload)
             last_vps_sent_status = current_vps_status
             
-        # 次の判定までスリープ（Tapoカメラのストリームから最新フレームを得るため、バッファをクリア）
-        # OpenCVのVideoCaptureはバックグラウンドでフレームをバッファするため、
-        # 単純なsleepだと「過去のフレーム」を処理してしまう問題があります。
-        # そのため、スリープ時間分フレームを空読みするか、接続を都度取り直すか、バッファサイズを1にする必要があります。
-        # ここでは一番簡単な「都度最新フレームまで読み飛ばす」か「都度スリープ」を制御します。
-        
         # 最新のフレームに追いつくために、バッファをフラッシュ
         for _ in range(5):
             cap.grab()
