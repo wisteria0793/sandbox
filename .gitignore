@@ -1,20 +1,26 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-
-# 環境変数ファイル (APIキーなどが入るため絶対にコミットしない)
-.env
-
-# --- OSごとの不要ファイル (Mac/Windows) ---
+# OS-specific files (Mac/Windows)
 .DS_Store
 Thumbs.db
 
-# データ
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+.venv/
+
+# IDE configurations
+.vscode/
+.idea/
+
+# Environment variables (Credentials)
+.env
+
+# PyTorch weights / Model files (Large files)
+*.pt
+
+# Local data directories
 data/

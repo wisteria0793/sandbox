@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import logging
 import csv
+from tqdm import tqdm
 
 # --- 設定 ---
 # ログ設定
@@ -11,11 +12,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # 入力ディレクトリ: 分割されたクリップが保存されているフォルダ
 INPUT_CLIP_DIR = Path("./data/videos_split")
-# 出力ファイル: アノテーションデータを保存するCSVファイル
-OUTPUT_CSV_FILE = Path("./data/annotation_data.csv")
+# 出力ディレクトリ: アノテーションデータを保存するCSVファイルを個別に生成するフォルダ
+ANNOTATIONS_DIR = Path("./data/annotations")
 
 # 使用するモデル
-MODEL_NAME = "yolov11n.pt"
+MODEL_NAME = "yolo11n.pt"
 
 # 検出設定
 PERSON_CLASS_INDEX = 0
@@ -30,6 +31,9 @@ def main():
         logging.error("先に 'split_videos_by_activity.py' を実行して、動画クリップを生成してください。")
         return
 
+    # アノテーション出力ディレクトリを作成
+    ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
     # モデルをロード
     logging.info(f"モデルをロードしています: {MODEL_NAME}")
     try:
@@ -38,24 +42,23 @@ def main():
         logging.error(f"モデルのロードに失敗しました: {e}")
         return
 
-    # CSVファイルを開き、ヘッダーを書き込む
-    with open(OUTPUT_CSV_FILE, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        header = ['clip_name', 'frame_id', 'track_id', 'x1', 'y1', 'x2', 'y2', 'confidence', 'class_id']
-        writer.writerow(header)
-        logging.info(f"出力ファイルを作成しました: {OUTPUT_CSV_FILE}")
-
-        # 入力ディレクトリ内の動画クリップを取得
-        clip_files = sorted(list(INPUT_CLIP_DIR.glob("*.mp4")))
-        if not clip_files:
-            logging.warning(f"入力ディレクトリに動画クリップが見つかりません: {INPUT_CLIP_DIR}")
-            return
+    # 入力ディレクトリ内の動画クリップを取得
+    clip_files = sorted(list(INPUT_CLIP_DIR.glob("*.mp4")))
+    if not clip_files:
+        logging.warning(f"入力ディレクトリに動画クリップが見つかりません: {INPUT_CLIP_DIR}")
+        return
             
-        logging.info(f"{len(clip_files)}個のクリップを処理します。")
+    logging.info(f"合計{len(clip_files)}個のクリップを処理し、アノテーションデータを生成します。")
 
-        # 各クリップを処理
-        for clip_path in clip_files:
-            logging.info(f"クリップを処理中: {clip_path.name}")
+    # 各クリップを処理し、個別のCSVを生成
+    for clip_path in tqdm(clip_files, desc="クリップを処理中", unit="クリップ"):
+        output_csv_path = ANNOTATIONS_DIR / (clip_path.stem + ".csv")
+        
+        with open(output_csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            header = ['clip_name', 'frame_id', 'track_id', 'x1', 'y1', 'x2', 'y2', 'confidence', 'class_id']
+            writer.writerow(header)
+
             cap = cv2.VideoCapture(str(clip_path))
             if not cap.isOpened():
                 logging.error(f"クリップを開けませんでした: {clip_path.name}")
@@ -80,7 +83,7 @@ def main():
                     for i, track_id in enumerate(track_ids):
                         x1, y1, x2, y2 = boxes[i]
                         row = [
-                            clip_path.name,
+                            clip_path.name, # クリップ名も保持
                             frame_index,
                             int(track_id),
                             int(x1),
@@ -96,7 +99,7 @@ def main():
             
             cap.release()
 
-    logging.info("すべての処理が完了しました。")
+    logging.info("すべてのクリップのアノテーションデータ生成が完了しました。")
 
 if __name__ == "__main__":
     main()
