@@ -17,8 +17,9 @@ RTSP_IP = os.getenv("TAPO_IP", "192.168.1.100")
 RTSP_PORT = os.getenv("TAPO_PORT", "554")
 RTSP_STREAM = os.getenv("TAPO_STREAM", "stream1")
 
-# スタッフ端末の固定IPアドレス一覧
-STAFF_IPS = ["192.168.1.150"]
+# スタッフ端末の固定IPアドレス一覧 (環境変数から取得、カンマ区切り対応)
+_staff_ips_raw = os.getenv("STAFF_IPS", "192.168.1.150")
+STAFF_IPS = [ip.strip() for ip in _staff_ips_raw.split(",") if ip.strip()]
 # スタッフのWi-Fi接続検知後の猶予時間 (秒) (スマホのスリープ対策: 15分)
 STAFF_GRACE_PERIOD_SEC = 900
 
