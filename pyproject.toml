@@ -17,6 +17,8 @@ dependencies = [
     "clip",
     "pychonet>=2.7.3",
     "openvino>=2024.0.0",
+    "torch",
+    "torchvision",
 ]
 
 [tool.uv.sources]
