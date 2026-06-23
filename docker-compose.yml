@@ -1,0 +1,33 @@
+services:
+  # ① 常時録画サービス (FFmpegレコーダー)
+  tapo-recorder:
+    build: .
+    container_name: tapo-recorder
+    restart: always
+    network_mode: host
+    environment:
+      - TAPO_USER=admin
+      - TAPO_PASS=password123
+      - TAPO_IP=192.168.1.100
+      - TAPO_PORT=554
+      - TAPO_STREAM=stream1
+    volumes:
+      - ./data:/app/data
+    command: python record_tapo.py
+
+  # ② 在室判定サービス (YOLO + 複合判定ログ出力 + VPS送信)
+  occupancy-detector:
+    build: .
+    container_name: occupancy-detector
+    restart: always
+    network_mode: host
+    environment:
+      - TAPO_USER=admin
+      - TAPO_PASS=password123
+      - TAPO_IP=192.168.1.100
+      - TAPO_PORT=554
+      - TAPO_STREAM=stream1
+      - VPS_API_URL=
+    volumes:
+      - ./data:/app/data
+    command: python occupancy_detector.py
