@@ -106,6 +106,52 @@ def start_sensor_server():
     except Exception as e:
         print(f"❌ センサー受信サーバーの起動に失敗しました: {e}", file=sys.stderr)
 
+class RTSPStreamReader:
+    """
+    RTSPストリームの受信遅延（OpenCVの内部バッファ）を防ぐため、
+    バックグラウンドスレッドで最速で映像を読み込み続け、
+    メイン処理には常に「最新の1フレーム」だけを提供するクラス。
+    """
+    def __init__(self, rtsp_url):
+        self.rtsp_url = rtsp_url
+        self.cap = cv2.VideoCapture(rtsp_url)
+        self.ret = False
+        self.frame = None
+        self.is_running = True
+        self.lock = threading.Lock()
+        
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while self.is_running:
+            if not self.cap.isOpened():
+                time.sleep(1)
+                self.cap = cv2.VideoCapture(self.rtsp_url)
+                continue
+                
+            ret, frame = self.cap.read()
+            if ret:
+                with self.lock:
+                    self.frame = frame
+                    self.ret = True
+            else:
+                # 接続が切れた場合は少し待って再接続
+                time.sleep(1)
+                self.cap.release()
+                self.cap = cv2.VideoCapture(self.rtsp_url)
+
+    def read(self):
+        with self.lock:
+            if self.ret and self.frame is not None:
+                return True, self.frame.copy()
+            return False, None
+
+    def release(self):
+        self.is_running = False
+        if self.cap.isOpened():
+            self.cap.release()
+
 def get_rtsp_url():
     """RTSP接続URLを組み立てる"""
     return f"rtsp://{RTSP_USER}:{RTSP_PASS}@{RTSP_IP}:{RTSP_PORT}/{RTSP_STREAM}"
@@ -271,23 +317,15 @@ def main():
     print(f"・ログ保存先: {LOG_FILE.resolve()}")
     print("="*60 + "\n")
     
-    cap = cv2.VideoCapture(rtsp_url)
+    reader = RTSPStreamReader(rtsp_url)
     
     last_vps_sent_status = None
     
     while True:
-        if not cap.isOpened():
-            print("⚠️ カメラへの接続がオフラインです。再接続を試みます...")
-            cap = cv2.VideoCapture(rtsp_url)
-            time.sleep(5)
-            continue
-            
-        ret, frame = cap.read()
-        if not ret:
-            print("⚠️ フレームを取得できませんでした。ストリームを再起動します...")
-            cap.release()
-            cap = cv2.VideoCapture(rtsp_url)
-            time.sleep(2)
+        ret, frame = reader.read()
+        if not ret or frame is None:
+            # 映像がまだ受信できていない場合は少し待つ
+            time.sleep(0.5)
             continue
             
         current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -373,10 +411,8 @@ def main():
             send_to_vps(vps_payload)
             last_vps_sent_status = current_vps_status
             
-        # 最新のフレームに追いつくために、バッファをフラッシュ
-        for _ in range(5):
-            cap.grab()
-            
+        # バックグラウンドスレッド(RTSPStreamReader)が常に最新のフレームを取得しているため、
+        # メインスレッド側でのバッファフラッシュ(cap.grab)は不要になります。
         time.sleep(CHECK_INTERVAL_SEC)
 
 if __name__ == "__main__":
